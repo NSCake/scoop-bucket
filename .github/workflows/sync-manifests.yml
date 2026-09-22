@@ -1,16 +1,14 @@
-# Sync this bucket's manifests with the rolling artifacts they point at.
+# Record the latest commit sha of each app's source repo as the manifest version.
 #
-# Each app's manifest points at an IMMUTABLE, run-numbered release asset
-# (ttrff-windows-<run>.zip on the app repo's rolling release). This workflow discovers the
-# newest asset via the GitHub API, downloads it, hashes it, and updates the manifest's
-# url + hash + version atomically -- URL and hash always describe the SAME bytes, so a
-# concurrent app-repo build can never change the artifact under a recorded hash (the
-# failure mode of a fixed-name rolling asset).
+# The manifests install GitHub's auto-generated BRANCH ARCHIVE of the app repo (no CI, no
+# built artifacts, no hash -- a branch archive's bytes change on every push, so a pinned
+# hash would go stale instantly). Scoop decides "is there an update" by comparing the
+# manifest's `version`, so this workflow's ONLY job is to write the latest `main` commit
+# sha (short form) into each manifest whenever it changes.
 #
-# Runs on a schedule, on any push to this repo (so a new manifest gets its initial hash),
-# and manually. Adding a new package = drop <app>.json in the root with a `release_repo`
-# (owner/name) + `release_tag` + `asset_pattern`; this workflow keeps it current with no
-# per-app config.
+# Runs on a schedule (every 6h), on any push to this repo, and manually. Adding a new
+# package = drop <app>.json in the root with `source_repo` (+ optional `source_branch`);
+# this workflow keeps its version current automatically.
 name: sync-manifests
 
 on:
@@ -29,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Update manifest hashes + versions
+      - name: Record latest source commits as versions
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -38,49 +36,26 @@ jobs:
           Get-ChildItem -Filter *.json | ForEach-Object {
             $manifest = $_.Name
             $json = Get-Content $manifest -Raw | ConvertFrom-Json
-            if (-not $json.release_repo) { return }
+            if (-not $json.source_repo) { return }
 
             Write-Host "syncing $manifest ..."
-            # discover the newest run-numbered asset on the app repo's rolling release
-            $assets = gh api "repos/$($json.release_repo)/releases/tags/$($json.release_tag)" `
-                        --jq '.assets[] | .name' 2>$null
-            if (-not $assets) {
-              Write-Warning "::warning file=$manifest::no release/assets found for $($json.release_repo)@$($json.release_tag); leaving manifest unchanged"
+            $branch = if ($json.source_branch) { $json.source_branch } else { "main" }
+            $sha = gh api "repos/$($json.source_repo)/commits/$branch" --jq '.sha' 2>$null
+            if (-not $sha) {
+              Write-Warning "::warning file=$manifest::could not read latest commit of $($json.source_repo)@$branch; leaving manifest unchanged"
               return
             }
-            $newest = $assets | Where-Object { $_ -match '^ttrff-windows-(\d+)\.zip$' } |
-              Sort-Object { [int]($_ -replace '^ttrff-windows-(\d+)\.zip$','$1') } -Descending |
-              Select-Object -First 1
-            if (-not $newest) { return }
+            $short = $sha.Substring(0, 7)
 
-            $newUrl = "https://github.com/$($json.release_repo)/releases/download/$($json.release_tag)/$newest"
-            if ($json.url -eq $newUrl -and $json.hash) {
-              Write-Host "  already at newest asset ($newest)"
+            if ($json.version -eq $short) {
+              Write-Host "  already at $short"
               return
             }
 
-            $tmp = New-TemporaryFile
-            try {
-              Invoke-WebRequest -Uri $newUrl -OutFile $tmp -MaximumRedirection 10
-              $hash = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
-            } catch {
-              Write-Warning "::warning file=$manifest::download failed ($($_.Exception.Message)); leaving manifest unchanged"
-              return
-            } finally {
-              Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-            }
-
-            # monotonic version: bump the last component so scoop update always sees it
-            $parts = "$($json.version)".Split('.')
-            $n = [int]$parts[-1]; $parts[-1] = [string]($n + 1)
-            $json.version = $parts -join '.'
-            $json.url = $newUrl
-            $json.hash = $hash
-            # keep the manifest self-documenting but drop the discovery keys from the
-            # published JSON (scoop ignores unknown keys; keep them for the next sync)
+            $json.version = $short
             $json | ConvertTo-Json -Depth 10 | Set-Content $manifest
             $changed = $true
-            Write-Host "  updated: version $($json.version) -> $newest"
+            Write-Host "  version -> $short"
           }
 
           if (-not $changed) {
@@ -90,5 +65,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add *.json
-          git commit -m "sync: refresh artifact hashes [skip ci]"
+          git commit -m "sync: record latest source commits [skip ci]"
           git push
