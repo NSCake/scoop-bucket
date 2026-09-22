@@ -48,7 +48,8 @@ jobs:
               Write-Warning "::warning file=$manifest::no release/assets found for $($json.release_repo)@$($json.release_tag); leaving manifest unchanged"
               return
             }
-            $newest = $assets | Sort-Object { [int]($_ -replace '\D+(\d+)\.zip','$1') } -Descending |
+            $newest = $assets | Where-Object { $_ -match '^ttrff-windows-(\d+)\.zip$' } |
+              Sort-Object { [int]($_ -replace '^ttrff-windows-(\d+)\.zip$','$1') } -Descending |
               Select-Object -First 1
             if (-not $newest) { return }
 
