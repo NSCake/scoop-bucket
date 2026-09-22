@@ -1,11 +1,11 @@
 {
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "Menu-bar / system-tray controller that auto-attaches the ttrff cosmetic animation-speed mods to Toontown Rewritten (owner's own client; cosmetic-only). Windows host support: tray + stop tooling; live attach pending Windows engine RE tables.",
   "homepage": "https://github.com/NSExceptional/ttrff",
   "license": "Unknown",
   "notes": "Personal cosmetic-only tool for the owner's own Toontown Rewritten client. Do not distribute further. First run creates a private venv (pystray/pillow/psutil/frida) inside the app dir and seeds the editable mod table to %LOCALAPPDATA%\\ttrff\\modset.json. Requires python on PATH (e.g. scoop install python).",
   "url": "https://github.com/NSExceptional/ttrff/releases/latest/download/ttrff-windows.zip",
-  "hash": "67870cec4c3f08da30c26995e2efddf26319f89f43e2f96b8a0ef2664e4e9463",
+  "hash": "e53af1bc317b16f83da29299120b446c2508b0b99e3f81463bf6069c0c366727",
   "bin": "bin\\ttrff.cmd",
   "shortcuts": [
     [
