@@ -1,13 +1,16 @@
 # Sync this bucket's manifests with the rolling artifacts they point at.
 #
-# Each app's manifest uses a rolling URL (releases/latest/download/...), so the artifact
-# changes whenever the app repo pushes. A pinned hash can't be written by hand, so this
-# workflow does it: download the artifact, hash it, bump the manifest's version (a
-# monotonic counter so `scoop update` always sees a change), and commit.
+# Each app's manifest points at an IMMUTABLE, run-numbered release asset
+# (ttrff-windows-<run>.zip on the app repo's rolling release). This workflow discovers the
+# newest asset via the GitHub API, downloads it, hashes it, and updates the manifest's
+# url + hash + version atomically -- URL and hash always describe the SAME bytes, so a
+# concurrent app-repo build can never change the artifact under a recorded hash (the
+# failure mode of a fixed-name rolling asset).
 #
 # Runs on a schedule, on any push to this repo (so a new manifest gets its initial hash),
-# and manually. Adding a new package = drop <app>.json in the root with a rolling `url`;
-# this workflow keeps its hash current with no per-app config.
+# and manually. Adding a new package = drop <app>.json in the root with a `release_repo`
+# (owner/name) + `release_tag` + `asset_pattern`; this workflow keeps it current with no
+# per-app config.
 name: sync-manifests
 
 on:
@@ -28,18 +31,36 @@ jobs:
 
       - name: Update manifest hashes + versions
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $changed = $false
           Get-ChildItem -Filter *.json | ForEach-Object {
             $manifest = $_.Name
             $json = Get-Content $manifest -Raw | ConvertFrom-Json
-            if (-not $json.url) { return }
+            if (-not $json.release_repo) { return }
 
             Write-Host "syncing $manifest ..."
+            # discover the newest run-numbered asset on the app repo's rolling release
+            $assets = gh api "repos/$($json.release_repo)/releases/tags/$($json.release_tag)" `
+                        --jq '.assets[] | .name' 2>$null
+            if (-not $assets) {
+              Write-Warning "::warning file=$manifest::no release/assets found for $($json.release_repo)@$($json.release_tag); leaving manifest unchanged"
+              return
+            }
+            $newest = $assets | Sort-Object { [int]($_ -replace '\D+(\d+)\.zip','$1') } -Descending |
+              Select-Object -First 1
+            if (-not $newest) { return }
+
+            $newUrl = "https://github.com/$($json.release_repo)/releases/download/$($json.release_tag)/$newest"
+            if ($json.url -eq $newUrl -and $json.hash) {
+              Write-Host "  already at newest asset ($newest)"
+              return
+            }
+
             $tmp = New-TemporaryFile
             try {
-              # download the rolling artifact (follow redirects to the release asset)
-              Invoke-WebRequest -Uri $json.url -OutFile $tmp -MaximumRedirection 10
+              Invoke-WebRequest -Uri $newUrl -OutFile $tmp -MaximumRedirection 10
               $hash = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
             } catch {
               Write-Warning "::warning file=$manifest::download failed ($($_.Exception.Message)); leaving manifest unchanged"
@@ -48,19 +69,17 @@ jobs:
               Remove-Item $tmp -Force -ErrorAction SilentlyContinue
             }
 
-            if ($json.hash -eq $hash) {
-              Write-Host "  hash unchanged"
-              return
-            }
-
             # monotonic version: bump the last component so scoop update always sees it
             $parts = "$($json.version)".Split('.')
             $n = [int]$parts[-1]; $parts[-1] = [string]($n + 1)
             $json.version = $parts -join '.'
+            $json.url = $newUrl
             $json.hash = $hash
+            # keep the manifest self-documenting but drop the discovery keys from the
+            # published JSON (scoop ignores unknown keys; keep them for the next sync)
             $json | ConvertTo-Json -Depth 10 | Set-Content $manifest
             $changed = $true
-            Write-Host "  updated: version $($json.version), hash $hash"
+            Write-Host "  updated: version $($json.version) -> $newest"
           }
 
           if (-not $changed) {
