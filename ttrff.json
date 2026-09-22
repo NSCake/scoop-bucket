@@ -1,5 +1,5 @@
 {
-  "version": "e497793",
+  "version": "877aa4e",
   "description": "Menu-bar / system-tray controller that auto-attaches the ttrff cosmetic animation-speed mods to Toontown Rewritten (owner's own client; cosmetic-only). Windows host support: tray + stop tooling; live attach pending Windows engine RE tables.",
   "homepage": "https://github.com/NSExceptional/ttrff",
   "license": "Unknown",
