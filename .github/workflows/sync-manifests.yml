@@ -1,0 +1,74 @@
+# Sync this bucket's manifests with the rolling artifacts they point at.
+#
+# Each app's manifest uses a rolling URL (releases/latest/download/...), so the artifact
+# changes whenever the app repo pushes. A pinned hash can't be written by hand, so this
+# workflow does it: download the artifact, hash it, bump the manifest's version (a
+# monotonic counter so `scoop update` always sees a change), and commit.
+#
+# Runs on a schedule, on any push to this repo (so a new manifest gets its initial hash),
+# and manually. Adding a new package = drop <app>.json in the root with a rolling `url`;
+# this workflow keeps its hash current with no per-app config.
+name: sync-manifests
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update manifest hashes + versions
+        shell: pwsh
+        run: |
+          $changed = $false
+          Get-ChildItem -Filter *.json | ForEach-Object {
+            $manifest = $_.Name
+            $json = Get-Content $manifest -Raw | ConvertFrom-Json
+            if (-not $json.url) { return }
+
+            Write-Host "syncing $manifest ..."
+            $tmp = New-TemporaryFile
+            try {
+              # download the rolling artifact (follow redirects to the release asset)
+              Invoke-WebRequest -Uri $json.url -OutFile $tmp -MaximumRedirection 10
+              $hash = (Get-FileHash $tmp -Algorithm SHA256).Hash.ToLower()
+            } catch {
+              Write-Warning "::warning file=$manifest::download failed ($($_.Exception.Message)); leaving manifest unchanged"
+              return
+            } finally {
+              Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+            }
+
+            if ($json.hash -eq $hash) {
+              Write-Host "  hash unchanged"
+              return
+            }
+
+            # monotonic version: bump the last component so scoop update always sees it
+            $parts = "$($json.version)".Split('.')
+            $n = [int]$parts[-1]; $parts[-1] = [string]($n + 1)
+            $json.version = $parts -join '.'
+            $json.hash = $hash
+            $json | ConvertTo-Json -Depth 10 | Set-Content $manifest
+            $changed = $true
+            Write-Host "  updated: version $($json.version), hash $hash"
+          }
+
+          if (-not $changed) {
+            Write-Host "nothing to do"
+            return
+          }
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add *.json
+          git commit -m "sync: refresh artifact hashes [skip ci]"
+          git push
