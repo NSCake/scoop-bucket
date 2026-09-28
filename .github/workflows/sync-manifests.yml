@@ -1,10 +1,21 @@
-# Record the latest commit sha of each app's source repo as the manifest version.
+# Record each app's latest source commit as a MONOTONIC manifest version.
 #
 # The manifests install GitHub's auto-generated BRANCH ARCHIVE of the app repo (no CI, no
 # built artifacts, no hash -- a branch archive's bytes change on every push, so a pinned
-# hash would go stale instantly). Scoop decides "is there an update" by comparing the
-# manifest's `version`, so this workflow's ONLY job is to write the latest `main` commit
-# sha (short form) into each manifest whenever it changes.
+# hash would go stale instantly). Scoop decides "is there an update" by COMPARING the
+# manifest's `version` against what is installed.
+#
+# The version used to be the bare short sha, and that quietly broke updates: Scoop compares
+# versions as text, and shas do not sort. Installing d019a68 and then publishing 818497a made
+# Scoop report "ttrff: d019a68 (latest version)" and refuse to update, because 'd' > '8'.
+# Roughly half of all pushes hit that, each one leaving users silently stale with no error.
+#
+# The version is therefore the commit's UTC timestamp followed by the short sha:
+#     2026.09.28.054338.818497a
+# The leading parts are numeric and strictly increase, so Scoop's comparison is always right;
+# the sha rides along so the installed directory still names the exact commit. Using the
+# COMMIT's time rather than the run's keeps it reproducible -- re-running this workflow on an
+# unchanged repo produces the identical version and no commit.
 #
 # Runs on a schedule (every 6h), on any push to this repo, and manually. Adding a new
 # package = drop <app>.json in the root with `source_repo` (+ optional `source_branch`);
@@ -40,22 +51,28 @@ jobs:
 
             Write-Host "syncing $manifest ..."
             $branch = if ($json.source_branch) { $json.source_branch } else { "main" }
-            $sha = gh api "repos/$($json.source_repo)/commits/$branch" --jq '.sha' 2>$null
-            if (-not $sha) {
+            $commitJson = gh api "repos/$($json.source_repo)/commits/$branch" 2>$null
+            if (-not $commitJson) {
               Write-Warning "::warning file=$manifest::could not read latest commit of $($json.source_repo)@$branch; leaving manifest unchanged"
               return
             }
+            $commit = $commitJson | ConvertFrom-Json
+            $sha = $commit.sha
             $short = $sha.Substring(0, 7)
 
-            if ($json.version -eq $short) {
-              Write-Host "  already at $short"
+            # Commit time, not run time: re-running on an unchanged repo must be a no-op.
+            $when = [datetimeoffset]::Parse($commit.commit.committer.date).ToUniversalTime()
+            $ver = '{0}.{1}' -f $when.ToString('yyyy.MM.dd.HHmmss'), $short
+
+            if ($json.version -eq $ver) {
+              Write-Host "  already at $ver"
               return
             }
 
-            $json.version = $short
+            $json.version = $ver
             $json | ConvertTo-Json -Depth 10 | Set-Content $manifest
             $changed = $true
-            Write-Host "  version -> $short"
+            Write-Host "  version -> $ver"
           }
 
           if (-not $changed) {
