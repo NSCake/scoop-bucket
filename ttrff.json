@@ -1,5 +1,5 @@
 {
-  "version": "2026.09.28.230052.018a7d4",
+  "version": "2026.09.28.230204.4ed8b99",
   "description": "Menu-bar / system-tray controller for the ttrff cosmetic animation-speed mods for Toontown Rewritten (owner's own client; cosmetic-only). Windows and macOS: auto-attach, per-group toggles, and a timed auto-collect for Cartoonival bags.",
   "homepage": "https://github.com/NSExceptional/ttrff",
   "license": "Unknown",
